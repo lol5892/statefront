@@ -1,0 +1,8 @@
+package/
+typescript.tgz
+node_modules/
+test-results/
+.auth/
+tools/
+gh.zip
+.publish/
