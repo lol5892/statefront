@@ -1,21 +1,25 @@
-# Statefront
+# Statefront · New Fronts (v3)
 
-Independent original territory strategy inspired by the mechanics of State.io. No original game code, logos, or graphic assets are included.
+Original mobile territory strategy. The v3 campaign replaces the full US map with 30 local, portrait battlefields inspired by six regional themes. Each operation has 6–10 large contiguous polygon sectors, independently generated silhouettes, positions and starting armies. No original State.io code, logos or assets are used.
 
-## Run
+## Run / build
 
-Node.js 20+ required. TypeScript 5.9.3 is downloaded from the npm registry into the ignored `package/` compiler directory. Run `node icons.mjs`, `node build.mjs`, `node --test tests/*.test.mjs`, and `node server.mjs`. The production game is in `dist/`, with no external runtime dependencies.
+Node.js 20+. The existing ignored `package/` directory contains the TypeScript 5.9.3 compiler downloaded from the official npm registry. `node build.mjs` compiles strict TypeScript and copies the PWA into `dist/`. `node --test tests/*.test.mjs` runs the tests. `node server.mjs` serves http://localhost:4173 . No external dependencies are loaded by the game.
 
 ## Play
 
-Drag from a blue state to a target. Drag through several blue states before releasing at a target to combine armies. Tap Select All then a destination to send all your states. The send percentage cycles 80%, 50%, 100%. Zoom allows panning by dragging the background. Friendly transfers reinforce the destination. Opposing dots cancel on collision; remaining troops reduce a garrison one for one, then capture the territory. Owned states produce troops; neutral states do not. Victory requires eliminating hostile territories and armies in flight. Defeat waits until the last player army is eliminated.
+Drag from blue to a destination. Swipe through several blue sectors to combine armies. Tap a blue sector, then tap a destination for an alternative to dragging. Dragging onto another friendly sector reinforces it. All Armies selects every blue sector. Sending cycles 75%, 50%, 100%. The camera is fixed and fits a local portrait board; no zoom or panning is needed. Army nodes are 44 CSS pixels, figures 21 pixels, touch targets 64 pixels, marching dots 6 pixels. The app accounts for safe areas.
 
-30 deterministic scenarios change starting states, troops, enemy count, and AI cadence. Three AI settings affect production, attack timing, targeting and defensive reinforcements. Saved games and campaign progress stay in localStorage on the current device. No server or account is required for play.
+Normal sectors generate 1.55 units/s, ⚡ hubs 2.8 units/s before AI difficulty modifiers. Neutral sectors do not generate troops. Garrisons cap at 160. Units cancel on contact and capture sectors one for one. Victory requires eliminating hostile sectors and armies in flight; defeat waits for the last player army.
 
-## iPhone
+## Campaign / opponents
 
-Open the HTTPS game in Safari, choose Share > Add to Home Screen. Load once online before playing offline. The service worker caches the entire production game. Clearing website data removes local progress. A physical iPhone was not available during development.
+Six regional themes repeat across five tiers, adding sectors and changing geometry, starting positions, forces and enemy count (1–4). Every fifth operation gives the enemy an extra foothold. Hubs create choices between fast expansion, production and defense. Three AI settings tune cadence, production, coordination and rescue behavior. Enemy personalities prioritize expansion, aggression or reserves. AI accounts for incoming armies and travel-time production, combines donors and rescues threatened sectors.
 
-## Data
+## Save / offline / updates
 
-US geographic boundaries: PublicaMundi MappingAPI US states GeoJSON, https://github.com/PublicaMundi/MappingAPI/blob/master/data/geojson/us-states.json . Albers projection and Canvas rendering implemented in this project. Alaska, Hawaii, and DC are excluded: 48 contiguous states. Game reference research: https://www.youtube.com/watch?v=aJd6ZXap680 and https://mwm.ai/apps/state-io-conquer-the-world/1559032748 .
+Existing unlocked levels and completions are preserved under `statefront-progress`. Old full-map battles restart on the corresponding local operation; incompatible 48-state snapshots are not loaded. V3 battles, armies and settings restore from localStorage. Progress is device-local. Safari Share > Add to Home Screen installs the PWA. Load once online to cache the complete game. V3 service worker replaces old Statefront caches while preserving unrelated apps' caches.
+
+## Validation scope
+
+Nine automated tests cover 30 unique maps, minimum node spacing, mobile-size coordinates, gestures, restart, version migration, resume, unlocks, battles, production hubs, coordinated/rescue AI and offline caching. 90 AI simulations (30 levels × 3 settings) verify active and valid battles. App-level tests use DOM/Canvas stubs; they are not a real Safari run. The browser tool's saved permission policy blocks localhost access. A physical iPhone is unavailable, so rendered appearance, Safari console and device frame rate remain unverified.
