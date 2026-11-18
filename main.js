@@ -1,32 +1,32 @@
 import { Battle } from './engine.js';
+import { makeLevel, REGIONS } from './levels.js';
 const $ = (id) => document.getElementById(id);
-const canvas = $('game'), ctx = canvas.getContext('2d');
-const hitCtx = document.createElement('canvas').getContext('2d');
-const colors = ['#459cf0', '#fa7868', '#b77bda', '#f1c15c', '#57bda4'], dark = ['#24669c', '#ad3c35', '#713d96', '#9a7527', '#287c68'];
-const map = await fetch('./map.json').then(r => { if (!r.ok)
-    throw Error('map'); return r.json(); });
+const canvas = $('game'), ctx = canvas.getContext('2d'), hitCtx = document.createElement('canvas').getContext('2d');
+const colors = ['#55aaf0', '#f28678', '#b694df', '#edc16c', '#65bcac'], dark = ['#21689f', '#ae4c43', '#77549c', '#9a7026', '#2a7d6e'], neutral = '#bcc4c3';
 let progress = { unlocked: 1, completed: [], difficulty: 1, sound: false };
 try {
     Object.assign(progress, JSON.parse(localStorage.getItem('statefront-progress') || '{}'));
+    progress.unlocked = Math.max(1, Math.min(30, progress.unlocked));
 }
 catch { }
-let battle = new Battle(map, { level: 1, difficulty: progress.difficulty }), paused = true, selection = [], fraction = .8, zoom = 1, pan = { x: 0, y: 0 }, pointer = null, drag = false, fx = [], last = 0, saveClock = 0, resultShown = false, audio = null;
-const paths = map.map(s => { let p = new Path2D(); for (const r of s.rings) {
+let level = makeLevel(1), battle = new Battle(level.states, { level: 1, difficulty: progress.difficulty }), paused = true, started = false, selection = [], fraction = .75, pointer = null, drag = false, hover = -1, origin = -1, last = 0, saveClock = 0, hudClock = 0, resultShown = false, audio = null;
+let paths = [], fills = [], transitions = [], flashes = [], fx = [];
+let w = 1, h = 1, scale = 1, ox = 0, oy = 0;
+function makePaths() { paths = battle.states.map(s => { let p = new Path2D(); for (const r of s.rings) {
     r.forEach(([x, y], i) => i ? p.lineTo(x, y) : p.moveTo(x, y));
     p.closePath();
-} return p; });
-let w = 1, h = 1, scale = 1, ox = 0, oy = 0;
-function resize() { const r = canvas.getBoundingClientRect(); w = r.width; h = r.height; let d = Math.min(devicePixelRatio || 1, 2); canvas.width = Math.round(w * d); canvas.height = Math.round(h * d); ctx.setTransform(d, 0, 0, d, 0, 0); scale = Math.min((w - 20) / 1000, (h - 35) / 650) * zoom; ox = (w - 1000 * scale) / 2 + pan.x; oy = (h - 650 * scale) / 2 + pan.y; }
+} return p; }); fills = battle.states.map(s => s.owner < 0 ? neutral : colors[s.owner]); transitions = fills.map(c => ({ from: c, to: c, t: 1 })); flashes = battle.states.map(() => 0); }
+function resize() { const r = canvas.getBoundingClientRect(); w = r.width; h = r.height; const d = Math.min(devicePixelRatio || 1, 2); canvas.width = Math.round(w * d); canvas.height = Math.round(h * d); ctx.setTransform(d, 0, 0, d, 0, 0); scale = Math.min((w - 8) / 360, (h - 8) / 500); ox = (w - 360 * scale) / 2; oy = (h - 500 * scale) / 2; }
 new ResizeObserver(resize).observe(canvas);
 function world(e) { const r = canvas.getBoundingClientRect(); return { x: (e.clientX - r.left - ox) / scale, y: (e.clientY - r.top - oy) / scale }; }
-function hit(p) { let closest = -1, d = 12 / scale; for (let i = 0; i < battle.states.length; i++) {
+function hit(p) { let best = -1, d = 32 / scale; for (let i = 0; i < battle.states.length; i++) {
     let s = battle.states[i], dd = Math.hypot(s.x - p.x, s.y - p.y);
     if (dd < d) {
-        closest = i;
+        best = i;
         d = dd;
     }
-} if (closest >= 0)
-    return closest; for (let i = 0; i < paths.length; i++)
+} if (best >= 0)
+    return best; for (let i = 0; i < paths.length; i++)
     if (hitCtx.isPointInPath(paths[i], p.x, p.y))
         return i; return -1; }
 function sound(freq = 500) { if (!progress.sound)
@@ -34,137 +34,143 @@ function sound(freq = 500) { if (!progress.sound)
     audio ?? (audio = new AudioContext());
     void audio.resume();
     let o = audio.createOscillator(), g = audio.createGain();
-    o.type = 'sine';
     o.frequency.setValueAtTime(freq, audio.currentTime);
-    o.frequency.exponentialRampToValueAtTime(freq * .6, audio.currentTime + .1);
+    o.frequency.exponentialRampToValueAtTime(freq * .6, audio.currentTime + .12);
     g.gain.setValueAtTime(.035, audio.currentTime);
-    g.gain.exponentialRampToValueAtTime(.001, audio.currentTime + .13);
+    g.gain.exponentialRampToValueAtTime(.001, audio.currentTime + .15);
     o.connect(g);
     g.connect(audio.destination);
     o.start();
-    o.stop(audio.currentTime + .14);
+    o.stop(audio.currentTime + .16);
 }
 catch { } }
-function persist() { try {
+function saveProgress() { try {
     localStorage.setItem('statefront-progress', JSON.stringify(progress));
-    localStorage.setItem('statefront-battle', JSON.stringify({ settings: battle.settings, states: battle.states, units: battle.units, time: battle.time, sent: battle.sent, captures: battle.captures, result: battle.result }));
 }
 catch { } }
-function toast(s) { $('toast').textContent = s; $('toast').style.opacity = '1'; setTimeout(() => $('toast').style.opacity = '0', 2000); }
-function start(level, resume = false) {
-    battle = new Battle(map, { level, difficulty: progress.difficulty });
-    if (resume) {
-        try {
-            let saved = JSON.parse(localStorage.getItem('statefront-battle') || 'null');
-            if (saved && !saved.result) {
-                battle = new Battle(map, saved.settings);
-                Object.assign(battle, saved);
-            }
-        }
-        catch { }
+function persist() { saveProgress(); if (!started)
+    return; try {
+    localStorage.setItem('statefront-battle', JSON.stringify({ version: 3, settings: battle.settings, states: battle.states, units: battle.units, time: battle.time, sent: battle.sent, captures: battle.captures, result: battle.result }));
+}
+catch { } }
+function readSaved() { try {
+    const s = JSON.parse(localStorage.getItem('statefront-battle') || 'null');
+    if (s?.version === 3 && !s.result && s.settings.level >= 1 && s.settings.level <= 30 && s.states.length === makeLevel(s.settings.level).states.length)
+        return s;
+}
+catch { } return null; }
+let toastTimer;
+function toast(s) { $('toast').textContent = s; $('toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('visible'), 2200); }
+function start(n, resume = false) {
+    let saved = resume ? readSaved() : null;
+    n = saved?.settings.level || n;
+    level = makeLevel(n);
+    battle = new Battle(level.states, { level: n, difficulty: progress.difficulty });
+    if (saved) {
+        battle.states = saved.states;
+        battle.units = saved.units;
+        battle.time = saved.time;
+        battle.sent = saved.sent;
+        battle.captures = saved.captures;
     }
+    started = true;
     paused = false;
     resultShown = false;
     selection = [];
-    zoom = 1;
-    pan = { x: 0, y: 0 };
+    pointer = null;
+    drag = false;
+    hover = -1;
+    fx = [];
+    makePaths();
     resize();
     $('modal').classList.add('hidden');
-    $('levelTitle').textContent = `Уровень ${String(battle.settings.level).padStart(2, '0')}`;
-    $('chapter').textContent = `КАМПАНИЯ · ${['ПЕРВЫЕ ГРАНИЦЫ', 'НОВЫЕ ФРОНТЫ', 'БОЛЬШАЯ СТРАТЕГИЯ', 'БОРЬБА ЗА ШТАТЫ', 'КОНТИНЕНТ'][Math.floor((battle.settings.level - 1) / 6)]}`;
+    $('levelTitle').textContent = level.name;
+    $('chapter').textContent = `ОПЕРАЦИЯ ${String(n).padStart(2, '0')} / 30`;
+    $('mapLabel').textContent = `${battle.states.length} СЕКТОРОВ · ${Math.min(4, 1 + Math.floor(n / 7))} СОПЕРНИК${n < 7 ? '' : 'А'}`;
+    $('brief').textContent = level.brief;
     persist();
+    updateHud();
     sound();
 }
-function show(html) { paused = true; selection = []; $('modal').innerHTML = `<section class="panel">${html}</section>`; $('modal').classList.remove('hidden'); }
+function show(html) { paused = true; selection = []; drag = false; pointer = null; hover = -1; $('modal').innerHTML = `<section class="panel">${html}</section>`; $('modal').classList.remove('hidden'); }
 function menu() {
-    let saved = null;
-    try {
-        saved = JSON.parse(localStorage.getItem('statefront-battle') || 'null');
-    }
-    catch { }
-    show(`<div class="eyebrow">СТРАТЕГИЯ В РЕАЛЬНОМ ВРЕМЕНИ</div><h2>Вся карта.<br>Твой ход.</h2><p>Захватывайте штаты, объединяйте армии и опережайте соперников. Синие территории — ваши.</p><div class="difficulty">${['Легко', 'Обычно', 'Сложно'].map((s, i) => `<button data-diff="${i}" class="${i === progress.difficulty ? 'active' : ''}">${s}</button>`).join('')}</div><button class="primary" id="play">${saved && !saved.result ? 'Продолжить бой' : 'Начать кампанию'} ↗</button><button class="secondary" id="choose">Выбрать уровень</button><p style="font-size:10px">Жест от своего штата к цели отправляет армию. Проведите через несколько своих штатов для общей атаки. Нажмите ＋ для увеличения карты; перетаскивайте фон для обзора.</p>`);
-    document.querySelectorAll('[data-diff]').forEach(b => b.onclick = () => { progress.difficulty = Number(b.dataset.diff); try {
-        localStorage.setItem('statefront-progress', JSON.stringify(progress));
-    }
-    catch { } menu(); });
-    $('play').onclick = () => start(saved?.settings?.level || progress.unlocked, !!saved && !saved.result);
+    let saved = readSaved();
+    show(`<div class="eyebrow">STATEFRONT · НОВЫЕ ФРОНТЫ</div><h2>Большие армии.<br>Близкие цели.</h2><p>30 локальных операций. Крупные территории. Каждый захват меняет баланс боя.</p><div class="difficulty">${['Легко', 'Тактика', 'Вызов'].map((s, i) => `<button data-diff="${i}" class="${i === progress.difficulty ? 'active' : ''}">${s}</button>`).join('')}</div><button class="primary" id="play">${saved ? 'Продолжить операцию' : 'Начать операцию'} <span>↗</span></button><button class="secondary" id="choose">Выбрать уровень</button><p class="help">Проведите от синей территории к цели.<br>⚡ Производственный узел даёт больше войск.</p>${!saved && progress.unlocked > 1 ? '<p class="migration">Прогресс кампании сохранён. Старый бой начнётся на новой локальной карте.</p>' : ''}`);
+    document.querySelectorAll('[data-diff]').forEach(b => b.onclick = () => { progress.difficulty = Number(b.dataset.diff); saveProgress(); menu(); });
+    $('play').onclick = () => start(saved?.settings.level || progress.unlocked, !!saved);
     $('choose').onclick = levelMenu;
 }
-function levelMenu() { show(`<div class="eyebrow">КАМПАНИЯ</div><h2>30 шагов к победе</h2><p>Побеждайте, чтобы открыть следующий уровень.</p><div class="grid">${Array.from({ length: 30 }, (_, i) => `<button data-level="${i + 1}" ${i + 1 > progress.unlocked ? 'disabled' : ''} class="${progress.completed.includes(i + 1) ? 'completed' : i + 1 <= progress.unlocked ? 'unlocked' : ''}">${i + 1 <= progress.unlocked ? i + 1 : '·'}</button>`).join('')}</div><button id="back" class="secondary">Назад</button>`); document.querySelectorAll('[data-level]').forEach(b => b.onclick = () => start(Number(b.dataset.level))); $('back').onclick = () => { if (battle.time > 0 && !battle.result) {
+function levelMenu() { show(`<div class="eyebrow">30 ЛОКАЛЬНЫХ ОПЕРАЦИЙ</div><h2>Выберите фронт</h2><p>От 6 до 10 секторов. Новая расстановка и форма карты на каждом уровне.</p><div class="grid">${Array.from({ length: 30 }, (_, i) => `<button data-level="${i + 1}" aria-label="Уровень ${i + 1}: ${REGIONS[i % 6]}" ${i + 1 > progress.unlocked ? 'disabled' : ''} class="${progress.completed.includes(i + 1) ? 'completed' : i + 1 <= progress.unlocked ? 'unlocked' : ''}">${i + 1}<small>${progress.completed.includes(i + 1) ? '✓' : i + 1 <= progress.unlocked ? '↗' : '·'}</small></button>`).join('')}</div><button id="back" class="secondary">${started && !battle.result ? 'Вернуться в бой' : 'Назад'}</button>`); document.querySelectorAll('[data-level]').forEach(b => b.onclick = () => start(Number(b.dataset.level))); $('back').onclick = () => { if (started && !battle.result) {
     paused = false;
     $('modal').classList.add('hidden');
 }
 else
     menu(); }; }
-function finish() { resultShown = true; let win = battle.result === 'victory', l = battle.settings.level; if (win) {
-    progress.unlocked = Math.max(progress.unlocked, Math.min(30, l + 1));
-    if (!progress.completed.includes(l))
-        progress.completed.push(l);
-} persist(); sound(win ? 880 : 200); show(`<div class="badge">${win ? '⚑' : '◌'}</div><div class="eyebrow">${win ? 'ТЕРРИТОРИЯ ПОД КОНТРОЛЕМ' : 'ПЕРЕГРУППИРОВКА'}</div><h2>${win ? 'Победа!' : 'Фронт потерян'}</h2><p>${win ? 'Соперники повержены. Следующая карта ждёт вашего решения.' : 'Держите резерв и атакуйте, когда противник отправляет свою армию.'}</p><div class="stats"><span>Время <b>${formatTime(battle.time)}</b></span><span>Отправлено <b>${battle.sent}</b></span></div><button id="next" class="primary">${win && l < 30 ? 'Следующий уровень ↗' : 'Играть снова ↗'}</button><button id="select" class="secondary">Выбор уровня</button>`); $('next').onclick = () => start(win && l < 30 ? l + 1 : l); $('select').onclick = levelMenu; }
 function formatTime(t) { return `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`; }
-let down = { x: 0, y: 0 }, panning = false;
-canvas.onpointerdown = e => { if (paused)
-    return; canvas.setPointerCapture(e.pointerId); pointer = world(e); down = { x: e.clientX, y: e.clientY }; let id = hit(pointer); if (id >= 0 && battle.states[id].owner === 0) {
-    if (!selection.includes(id))
-        selection.push(id);
-    drag = true;
-    panning = false;
-    sound(450);
-}
-else if (selection.length && id >= 0) {
-    attack(id);
-    drag = false;
-    pointer = null;
-}
-else {
-    panning = true;
-    drag = false;
-    selection = [];
-} };
-canvas.onpointermove = e => { if (paused)
-    return; if (panning && e.buttons) {
-    pan.x += e.clientX - down.x;
-    pan.y += e.clientY - down.y;
-    pan.x = Math.max(-w * zoom * .6, Math.min(w * zoom * .6, pan.x));
-    pan.y = Math.max(-h * .6, Math.min(h * .6, pan.y));
-    down = { x: e.clientX, y: e.clientY };
-    resize();
-} pointer = world(e); if (drag) {
-    let id = hit(pointer);
-    if (id >= 0 && battle.states[id].owner === 0 && !selection.includes(id)) {
-        selection.push(id);
-        sound(550);
-    }
-} };
-function attack(id) { let own = selection.filter(i => battle.states[i].owner === 0 && i !== id); let count = battle.send(own, id, fraction); if (count) {
-    sound(650);
+function finish() { resultShown = true; const win = battle.result === 'victory', n = battle.settings.level; if (win) {
+    progress.unlocked = Math.max(progress.unlocked, Math.min(30, n + 1));
+    if (!progress.completed.includes(n))
+        progress.completed.push(n);
+} persist(); sound(win ? 880 : 180); show(`<div class="badge ${win ? 'won' : 'lost'}">${win ? '⚑' : '◌'}</div><div class="eyebrow">ОПЕРАЦИЯ ${String(n).padStart(2, '0')}</div><h2>${win ? 'Фронт взят!' : 'Нужен новый план'}</h2><p>${win ? (n === 30 ? 'Вся кампания пройдена. Попробуйте более сложный режим.' : 'Хороший ход. На следующем фронте — новая расстановка сил.') : 'Берегите резерв. Перехватите узел ⚡ или атакуйте сразу после вражеского залпа.'}</p><div class="stats"><span>Время <b>${formatTime(battle.time)}</b></span><span>Войска <b>${battle.sent}</b></span></div><button id="next" class="primary">${win && n < 30 ? 'Следующая операция' : 'Попробовать снова'} ↗</button><button id="select" class="secondary">Выбор уровня</button>`); $('next').onclick = () => start(win && n < 30 ? n + 1 : n); $('select').onclick = levelMenu; }
+function attack(id) { const sources = selection.filter(i => battle.states[i].owner === 0 && i !== id); let n = battle.send(sources, id, fraction); if (n) {
+    sound(600);
+    toast(`Отправлено ${n} → ${battle.states[id].name}`);
     selection = [];
     persist();
 }
 else
     toast('Накопите хотя бы 2 бойцов'); }
-canvas.onpointerup = e => { if (drag) {
-    let id = hit(world(e));
-    if (id >= 0 && !selection.includes(id))
+canvas.onpointerdown = e => { if (paused || !e.isPrimary)
+    return; canvas.setPointerCapture(e.pointerId); pointer = world(e); const id = hit(pointer); origin = id; if (id < 0) {
+    selection = [];
+    drag = false;
+    return;
+} if (selection.length && !selection.includes(id)) {
+    attack(id);
+    drag = false;
+    pointer = null;
+    return;
+} if (battle.states[id].owner === 0) {
+    if (!selection.includes(id))
+        selection.push(id);
+    drag = true;
+    hover = id;
+    sound(440);
+}
+else {
+    selection = [];
+    drag = false;
+} };
+canvas.onpointermove = e => { if (paused || !drag || !e.isPrimary)
+    return; pointer = world(e); hover = hit(pointer); if (hover >= 0 && battle.states[hover].owner === 0 && !selection.includes(hover)) {
+    selection.push(hover);
+    sound(520);
+} };
+canvas.onpointerup = e => { if (!e.isPrimary)
+    return; if (drag) {
+    const id = hit(world(e));
+    if (id >= 0 && id !== origin)
         attack(id);
-} drag = false; panning = false; pointer = null; };
-canvas.onpointercancel = () => { drag = false; panning = false; pointer = null; selection = []; };
+} drag = false; pointer = null; hover = -1; };
+canvas.onpointercancel = () => { drag = false; pointer = null; hover = -1; selection = []; };
 $('all').onclick = () => { if (paused)
-    return; selection = battle.states.map((s, i) => s.owner === 0 ? i : -1).filter(i => i >= 0); toast('Нажмите на цель для общей атаки'); };
-$('percent').onclick = () => { fraction = fraction === .8 ? .5 : fraction === .5 ? 1 : .8; $('percent').textContent = `Отправка ${fraction * 100}%`; };
-$('zoom').onclick = () => { zoom = zoom === 1 ? 1.7 : zoom === 1.7 ? 2.5 : 1; pan = { x: 0, y: 0 }; resize(); $('zoom').textContent = zoom === 1 ? '＋' : '−'; toast(zoom === 1 ? 'Вся карта' : 'Перетаскивайте фон для обзора'); };
-$('sound').onclick = () => { progress.sound = !progress.sound; $('sound').style.opacity = progress.sound ? '1' : '.45'; persist(); sound(); };
-$('sound').style.opacity = progress.sound ? '1' : '.45';
+    return; selection = battle.states.map((s, i) => s.owner === 0 ? i : -1).filter(i => i >= 0); toast('Нажмите цель — атакуют все выбранные территории'); };
+$('percent').onclick = () => { fraction = fraction === .75 ? .5 : fraction === .5 ? 1 : .75; $('percent').textContent = `${fraction * 100}% войск`; };
+$('sound').onclick = () => { progress.sound = !progress.sound; $('sound').classList.toggle('muted', !progress.sound); $('sound').setAttribute('aria-label', progress.sound ? 'Отключить звук' : 'Включить звук'); saveProgress(); sound(); };
+$('sound').classList.toggle('muted', !progress.sound);
 $('levelsBtn').onclick = levelMenu;
-$('pause').onclick = () => { if (paused)
-    return; persist(); show('<div class="eyebrow">ПАУЗА</div><h2>Передышка</h2><p>Бой сохранён на этом устройстве.</p><button id="resume" class="primary">Продолжить ↗</button><button id="restart" class="secondary">Начать уровень заново</button><button id="choose" class="secondary">Выбор уровня</button>'); $('resume').onclick = () => { paused = false; $('modal').classList.add('hidden'); }; $('restart').onclick = () => start(battle.settings.level); $('choose').onclick = levelMenu; };
+function pause() { if (paused)
+    return; persist(); show('<div class="eyebrow">ОПЕРАЦИЯ ПРИОСТАНОВЛЕНА</div><h2>Ваш ход подождёт.</h2><p>Бой сохранён на этом устройстве.</p><button id="resume" class="primary">Вернуться в бой ↗</button><button id="restart" class="secondary">Начать операцию заново</button><button id="choose" class="secondary">Выбор уровня</button>'); $('resume').onclick = () => { paused = false; $('modal').classList.add('hidden'); }; $('restart').onclick = () => start(battle.settings.level); $('choose').onclick = levelMenu; }
+$('pause').onclick = pause;
+$('restartBtn').onclick = () => { if (paused)
+    return; pause(); $('restart').focus(); };
 document.addEventListener('visibilitychange', () => { if (document.hidden) {
     persist();
-    if (!paused)
-        $('pause').click();
+    pause();
 } });
 window.addEventListener('pagehide', persist);
-let visualOwners = map.map(() => -1), tints = map.map(() => 0);
+function blend(a, b, t) { const c = (s, i) => parseInt(s.slice(i, i + 2), 16); return `rgb(${[1, 3, 5].map(i => Math.round(c(a, i) + (c(b, i) - c(a, i)) * t)).join(',')})`; }
+function updateHud() { const totals = colors.map((_, o) => battle.states.filter(s => s.owner === o).reduce((a, s) => a + s.troops, 0) + battle.units.filter(u => u.owner === o).length), total = totals.reduce((a, b) => a + b, 0) || 1; $('power').innerHTML = totals.map((n, i) => n ? `<div style="background:${colors[i]};width:${n / total * 100}%"></div>` : '').join(''); $('owned').textContent = `${battle.states.filter(s => s.owner === 0).length} / ${battle.states.length}`; $('timer').textContent = formatTime(battle.time); $('hint').textContent = selection.length ? `Выбрано: ${selection.length} · укажите цель` : 'Проведите от синего сектора к цели'; }
 function frame(now) {
     let dt = Math.min((now - last) / 1000 || 0, .05);
     last = now;
@@ -175,8 +181,11 @@ function frame(now) {
             saveClock = 0;
             persist();
         }
-        for (const e of battle.events.slice(0, 15))
-            fx.push({ ...e, t: .4, color: colors[e.owner] });
+        for (const e of battle.events.slice(0, 12)) {
+            fx.push({ ...e, t: e.capture ? .7 : .28, capture: !!e.capture, color: colors[e.owner] });
+            if (e.capture)
+                sound(e.owner === 0 ? 780 : 280);
+        }
         if (battle.result && !resultShown)
             finish();
     }
@@ -185,26 +194,52 @@ function frame(now) {
     ctx.translate(ox, oy);
     ctx.scale(scale, scale);
     for (let i = 0; i < battle.states.length; i++) {
-        let s = battle.states[i];
-        ctx.fillStyle = s.owner < 0 ? '#aeb4b1' : colors[s.owner];
-        ctx.strokeStyle = '#e8e9e7';
-        ctx.lineWidth = 2 / scale;
+        let s = battle.states[i], next = s.owner < 0 ? neutral : colors[s.owner], tr = transitions[i];
+        if (next !== fills[i]) {
+            tr.from = fills[i];
+            tr.to = next;
+            tr.t = 0;
+            fills[i] = next;
+        }
+        tr.t = Math.min(1, tr.t + dt * 3);
+        ctx.fillStyle = blend(tr.from, tr.to, tr.t);
+        ctx.strokeStyle = '#f3f5f2';
+        ctx.lineWidth = 3.5 / scale;
         ctx.lineJoin = 'round';
         ctx.fill(paths[i]);
         ctx.stroke(paths[i]);
-        if (visualOwners[i] !== s.owner) {
-            visualOwners[i] = s.owner;
-            tints[i] = 1;
-        }
-        if (tints[i] > 0) {
-            ctx.fillStyle = `rgba(255,255,255,${tints[i] * .3})`;
-            ctx.fill(paths[i]);
-            tints[i] = Math.max(0, tints[i] - dt * 2);
-        }
         if (selection.includes(i)) {
+            ctx.save();
+            ctx.fillStyle = '#ffffff22';
+            ctx.fill(paths[i]);
             ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 3 / scale;
+            ctx.lineWidth = 4 / scale;
             ctx.stroke(paths[i]);
+            ctx.restore();
+        }
+    }
+    if (drag && pointer) {
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = '#21689f';
+        ctx.lineWidth = 3 / scale;
+        ctx.setLineDash([7 / scale, 7 / scale]);
+        ctx.lineDashOffset = -now / 65;
+        const target = hover >= 0 ? battle.states[hover] : pointer;
+        for (const id of selection) {
+            const s = battle.states[id];
+            if (id === hover)
+                continue;
+            ctx.beginPath();
+            ctx.moveTo(s.x, s.y);
+            ctx.lineTo(target.x, target.y);
+            ctx.stroke();
+        }
+        ctx.setLineDash([]);
+        if (hover >= 0) {
+            let s = battle.states[hover];
+            ctx.beginPath();
+            ctx.arc(s.x, s.y, 31 / scale, 0, Math.PI * 2);
+            ctx.stroke();
         }
     }
     for (const u of battle.units) {
@@ -212,63 +247,69 @@ function frame(now) {
             continue;
         ctx.fillStyle = dark[u.owner];
         ctx.beginPath();
-        ctx.arc(u.x, u.y, Math.max(2.5, 1.7 / scale), 0, Math.PI * 2);
+        ctx.arc(u.x, u.y, 3 / scale, 0, Math.PI * 2);
         ctx.fill();
-    }
-    if (drag && pointer) {
-        ctx.setLineDash([5 / scale, 5 / scale]);
-        ctx.strokeStyle = '#24669c';
-        ctx.lineWidth = 2 / scale;
-        for (const id of selection) {
-            let s = battle.states[id];
-            ctx.beginPath();
-            ctx.moveTo(s.x, s.y);
-            ctx.lineTo(pointer.x, pointer.y);
-            ctx.stroke();
-        }
-        ctx.setLineDash([]);
-    }
-    for (let i = 0; i < battle.states.length; i++) {
-        let s = battle.states[i], r = Math.max(12, 8.5 / scale);
-        ctx.beginPath();
-        ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
-        ctx.fillStyle = s.owner < 0 ? '#f7f8f5' : dark[s.owner];
-        ctx.fill();
-        if (selection.includes(i)) {
-            ctx.strokeStyle = 'white';
-            ctx.lineWidth = 2 / scale;
-            ctx.stroke();
-        }
-        ctx.font = `bold ${Math.max(16, 9 / scale)}px Arial`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillStyle = s.owner < 0 ? '#737e79' : '#fff';
-        ctx.fillText(String(Math.floor(s.troops)), s.x, s.y + .5 / scale);
     }
     fx = fx.filter(f => f.t > 0);
     for (const f of fx) {
+        const life = f.capture ? .7 : .28;
         f.t -= dt;
+        ctx.globalAlpha = Math.max(0, f.t / life);
         ctx.strokeStyle = f.color;
-        ctx.globalAlpha = Math.max(0, f.t / .4);
-        ctx.lineWidth = 2 / scale;
+        ctx.lineWidth = (f.capture ? 4 : 2.5) / scale;
         ctx.beginPath();
-        ctx.arc(f.x, f.y, (1 - f.t / .4) * 20 + 6, 0, Math.PI * 2);
+        ctx.arc(f.x, f.y, (f.capture ? 25 : 12) + (1 - f.t / life) * (f.capture ? 25 : 11), 0, Math.PI * 2);
         ctx.stroke();
     }
     ctx.globalAlpha = 1;
+    for (let i = 0; i < battle.states.length; i++) {
+        const s = battle.states[i], r = 22 / scale;
+        ctx.save();
+        ctx.shadowColor = '#233d3a24';
+        ctx.shadowBlur = 5 / scale;
+        ctx.shadowOffsetY = 2 / scale;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+        ctx.fillStyle = s.owner < 0 ? '#f8faf6' : dark[s.owner];
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.shadowOffsetY = 0;
+        ctx.strokeStyle = selection.includes(i) ? '#fff' : '#ffffff55';
+        ctx.lineWidth = (selection.includes(i) ? 3 : 1) / scale;
+        ctx.stroke();
+        ctx.fillStyle = s.owner < 0 ? '#697773' : '#fff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = `800 ${21 / scale}px Arial`;
+        ctx.fillText(String(Math.floor(s.troops)), s.x, s.y + .5 / scale);
+        if (s.kind === 'factory') {
+            ctx.beginPath();
+            ctx.arc(s.x + 17 / scale, s.y - 19 / scale, 10 / scale, 0, Math.PI * 2);
+            ctx.fillStyle = '#fff2bd';
+            ctx.fill();
+            ctx.font = `bold ${13 / scale}px Arial`;
+            ctx.fillStyle = '#947125';
+            ctx.fillText('ϟ', s.x + 17 / scale, s.y - 18 / scale);
+        }
+        ctx.font = `600 ${10 / scale}px Arial`;
+        ctx.fillStyle = s.owner < 0 ? '#63736f' : dark[s.owner];
+        ctx.fillText(s.name, s.x, s.y + 34 / scale);
+        ctx.restore();
+    }
     ctx.restore();
-    let totals = colors.map((_, owner) => battle.states.filter(s => s.owner === owner).reduce((a, s) => a + s.troops, 0) + battle.units.filter(u => u.owner === owner).length), total = totals.reduce((a, b) => a + b, 0);
-    $('power').innerHTML = totals.map((n, i) => n ? `<div style="background:${colors[i]};width:${n / total * 100}%"></div>` : '').join('');
-    $('owned').textContent = `${battle.states.filter(s => s.owner === 0).length} / 48`;
-    $('timer').textContent = formatTime(battle.time);
-    $('hint').textContent = selection.length ? `Выбрано штатов: ${selection.length}. Укажите цель` : 'Проведите от синего штата к цели';
+    hudClock += dt;
+    if (hudClock > .1) {
+        hudClock = 0;
+        updateHud();
+    }
     requestAnimationFrame(frame);
 }
+makePaths();
+resize();
 $('loading').remove();
 menu();
-resize();
 requestAnimationFrame(frame);
 if ('serviceWorker' in navigator)
-    navigator.serviceWorker.register('./sw.js').catch(() => toast('Офлайн-режим недоступен'));
-// Read-only snapshot for QA; no game cheats in production.
-Object.defineProperty(window, 'statefront', { get: () => JSON.parse(JSON.stringify({ settings: battle.settings, states: battle.states.map(({ name, x, y, owner, troops }) => ({ name, x, y, owner, troops })), units: battle.units.length, result: battle.result, paused, selection, view: { scale, ox, oy } })) });
+    navigator.serviceWorker.register('./sw.js').then(reg => { reg.addEventListener('updatefound', () => { let worker = reg.installing; worker?.addEventListener('statechange', () => { if (worker?.state === 'installed' && navigator.serviceWorker.controller)
+        toast('Обновление готово — откройте игру заново'); }); }); }).catch(() => toast('Офлайн-режим недоступен'));
+Object.defineProperty(window, 'statefront', { get: () => JSON.parse(JSON.stringify({ version: 3, settings: battle.settings, states: battle.states, units: battle.units.length, result: battle.result, paused, selection, view: { scale, ox, oy, width: w, height: h, nodeDiameter: 44, touchDiameter: 64 } })) });
