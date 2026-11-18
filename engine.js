@@ -100,20 +100,30 @@ export class Battle {
             if (u.delay > 0)
                 continue;
             let gx = Math.floor(u.x / 9), gy = Math.floor(u.y / 9);
-            for (let dx = -1; dx <= 1; dx++)
+            collision: for (let dx = -1; dx <= 1; dx++)
                 for (let dy = -1; dy <= 1; dy++) {
-                    for (const v of buckets.get(`${gx + dx},${gy + dy}`) || []) {
-                        if (!dead.has(v) && !dead.has(u) && v.owner !== u.owner && this.dist(u, v) < 5) {
-                            dead.add(u);
-                            dead.add(v);
-                            this.events.push({ x: u.x, y: u.y, owner: u.owner });
+                    const near = buckets.get(`${gx + dx},${gy + dy}`);
+                    if (!near)
+                        continue;
+                    for (const [owner, group] of near) {
+                        if (owner === u.owner)
+                            continue;
+                        for (const v of group) {
+                            if (!dead.has(v) && this.dist(u, v) < 5) {
+                                dead.add(u);
+                                dead.add(v);
+                                this.events.push({ x: u.x, y: u.y, owner: u.owner });
+                                break collision;
+                            }
                         }
                     }
                 }
-            let key = `${gx},${gy}`;
-            let cell = buckets.get(key) || [];
-            cell.push(u);
-            buckets.set(key, cell);
+            if (!dead.has(u)) {
+                let key = `${gx},${gy}`, cell = buckets.get(key) || new Map(), group = cell.get(u.owner) || [];
+                group.push(u);
+                cell.set(u.owner, group);
+                buckets.set(key, cell);
+            }
         }
         if (dead.size)
             this.units = this.units.filter(u => !dead.has(u));
